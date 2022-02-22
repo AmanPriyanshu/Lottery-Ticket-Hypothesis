@@ -1,5 +1,49 @@
 import torch
-from trainer import train
+from dataloader import MNIST_Dataset as ProjectDataset
+from model import FullyConnectedModel as ProjectModel
+from tqdm import tqdm
+
+def train(pruner, model, optimizer, epochs, base=False):
+	training_data = ProjectDataset(mode="train")
+	train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=64)
+	validation_data = ProjectDataset(mode="val")
+	validation_dataloader = torch.utils.data.DataLoader(validation_data, batch_size=64)
+	criterion = torch.nn.CrossEntropyLoss()
+
+	for epoch in range(epochs):
+		model.train()
+		running_loss, running_acc = 0, 0
+		bar = tqdm(enumerate(train_dataloader), total=len(train_dataloader))
+		for batch_idx, (batch_x, batch_y) in bar:
+			batch_x = batch_x.float()
+			optimizer.zero_grad()
+			if not base:
+				pruner.apply_mask()
+			pred_y = model(batch_x)
+			loss = criterion(pred_y, batch_y)
+			loss.backward()
+			optimizer.step()
+			running_loss += loss.item()
+			pred = torch.argmax(pred_y, axis=1)
+			acc = torch.mean((pred==batch_y).float())
+			running_acc += acc.item()
+			bar.set_description("TRAINING:- "+str({"epoch": epoch+1, "loss": round(running_loss/(batch_idx+1), 4), "acc": round(running_acc/(batch_idx+1), 4)}))
+		bar.close()
+		model.eval()
+		running_loss, running_acc = 0, 0
+		bar = tqdm(enumerate(validation_dataloader), total=len(validation_dataloader))
+		for batch_idx, (batch_x, batch_y) in bar:
+			batch_x = batch_x.float()
+			if not base:
+				pruner.apply_mask()
+			pred_y = model(batch_x)
+			loss = criterion(pred_y, batch_y)
+			running_loss += loss.item()
+			pred = torch.argmax(pred_y, axis=1)
+			acc = torch.mean((pred==batch_y).float())
+			running_acc += acc.item()
+			bar.set_description("VALIDATION:- "+str({"epoch": epoch+1, "loss": round(running_loss/(batch_idx+1), 4), "acc": round(running_acc/(batch_idx+1), 4)}))
+		bar.close()
 
 class ModelAugmenter():
 	def __init__(self, model, seed, p):
@@ -32,7 +76,7 @@ class ModelAugmenter():
 			if type(layer) == torch.nn.Linear:
 				tensor = layer.weight.data
 				tensor = tensor.flatten()
-				self.apply_mask(layer, layer_id, tensor)
+				self.mask(layer, layer_id, tensor)
 
 	def prune(self, m, idx):
 		if type(m) == torch.nn.Linear:
@@ -59,11 +103,12 @@ class ModelAugmenter():
 if __name__ == '__main__':
 	model = ProjectModel()
 	optimizer = torch.optim.SGD(model.parameters(), lr=0.0005)
-	pruner = PrunerModel(model, seed=0, p=0.0182)
-	train(pruner.model, optimizer, 10)
-	torch.save(pruner.model, "./models/original.pt")
+	pruner = ModelAugmenter(model, seed=0, p=0.0182)
+	train(pruner, pruner.neural_network, optimizer, 3, base=True)
+	torch.save(pruner.neural_network, "./models/original.pt")
 	for pruning_iterations in range(5):
-		print("Pruning for: p="+str((p*100)**(pruning_iterations+1)))
+		print("Pruning for: p="+str((pruner.p*100)**(pruning_iterations+1)))
 		pruner.prune_weights()
-		train(pruner.model, optimizer, 10)
-		torch.save(pruner.model, "./models/model"+str(pruning_iterations+1)+".pt")
+		torch.save(pruner.neural_network, "./models/model_pruned"+str(pruning_iterations+1)+".pt")
+		train(pruner, pruner.neural_network, optimizer, 3)
+		torch.save(pruner.neural_network, "./models/model"+str(pruning_iterations+1)+".pt")
